@@ -101,6 +101,10 @@ class SelfAttention(nn.Module):
             4 * embedding_dim
         )
         self.gelu = nn.GELU()
+        self.fc2 = nn.Linear(
+            4 * embedding_dim,
+            embedding_dim
+        )
 
         # Create a lower-triangular mask
         self.register_buffer(
@@ -180,3 +184,145 @@ class SelfAttention(nn.Module):
         )
 
         return (Q, K, V, scores, attention_weights, attention_output)
+
+class FeedForward(nn.Module):
+
+    def __init__(self, embedding_dim):
+        super().__init__()
+
+        self.fc1 = nn.Linear(
+            embedding_dim,
+            4 * embedding_dim
+        )
+
+        self.gelu = nn.GELU()
+
+        self.fc2 = nn.Linear(
+            4 * embedding_dim,
+            embedding_dim
+        )
+
+    def forward(self, x):
+
+        x = self.fc1(x)
+
+        x = self.gelu(x)
+
+        x = self.fc2(x)
+
+        return x
+
+class TransformerBlock(nn.Module):
+
+    def __init__(
+        self,
+        embedding_dim,
+        num_heads,
+        context_length
+    ):
+        super().__init__()
+
+        self.layer_norm_1 = nn.LayerNorm(
+            embedding_dim
+        )
+
+        self.attention = SelfAttention(
+            embedding_dim,
+            num_heads,
+            context_length
+        )
+
+        self.layer_norm_2 = nn.LayerNorm(
+            embedding_dim
+        )
+
+        self.feed_forward = FeedForward(
+            embedding_dim
+        )
+    def forward(self, x):
+
+        # Normalize before attention
+        normalized_x = self.layer_norm_1(x)
+
+        # Self-attention
+        (
+        Q,
+        K,
+        V,
+        scores,
+        attention_weights,
+        attention_output
+    ) = self.attention(normalized_x)
+
+        # Residual connection
+        x = x + attention_output
+
+        # Normalize before feed-forward
+        normalized_x = self.layer_norm_2(x)
+
+        # Feed-forward network
+        feed_forward_output = self.feed_forward(
+            normalized_x
+        )
+
+        # Residual connection
+        x = x + feed_forward_output
+
+        return x
+
+class Transformer(nn.Module):
+
+    def __init__(
+        self,
+        vocab_size,
+        context_length,
+        embedding_dim,
+        num_heads,
+        num_layers
+    ):
+        super().__init__()
+
+        self.embedding = InputEmbedding(
+            vocab_size,
+            context_length,
+            embedding_dim
+        )
+
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    embedding_dim,
+                    num_heads,
+                    context_length
+                )
+                for _ in range(num_layers)
+            ]
+        )
+    def forward(self, tokens):
+
+        x = self.embedding(tokens)
+
+        for block in self.blocks:
+            x = block(x)
+
+        return x
+
+class LanguageModelHead(nn.Module):
+
+    def __init__(
+        self,
+        embedding_dim,
+        vocab_size
+    ):
+        super().__init__()
+
+        self.output_projection = nn.Linear(
+            embedding_dim,
+            vocab_size
+        )
+
+    def forward(self, x):
+
+        logits = self.output_projection(x)
+
+        return logits
