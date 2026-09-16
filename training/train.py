@@ -1,10 +1,13 @@
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from training.dataset import (
+    TextDataset,
+    split_conversations
+)
 import time
 from torch.utils.data import DataLoader
-
-from training.dataset import TextDataset
+from tokenizer.bpe_tokenizer import BPETokenizer
 from config import ModelConfig
 from model.transformer import Transformer, LanguageModelHead
 
@@ -27,33 +30,66 @@ if device.type == "cuda":
 # Dataset
 # =========================
 
-with open("data/raw/training.txt", "r", encoding="utf-8") as file:
+with open(
+    "data/raw/training.txt",
+    "r",
+    encoding="utf-8"
+) as file:
+
     text = file.read()
 
 
-dataset = TextDataset(
+# =========================
+# Split conversations first
+# =========================
+
+train_conversations, validation_conversations = split_conversations(
     text,
-    ModelConfig.context_length
+    validation_ratio=0.10,
+    seed=42
 )
 
-vocab_size = dataset.tokenizer.vocab_size
+print("\nTraining conversations:")
+print(len(train_conversations))
 
-print("\nBPE dataset created.")
+print("Validation conversations:")
+print(len(validation_conversations))
+
+train_text = "\n".join(
+    train_conversations
+)
+
+tokenizer = BPETokenizer(
+    train_text,
+    num_merges=100
+)
+
+vocab_size = tokenizer.vocab_size
+
+print("\nBPE tokenizer created.")
 print("Vocabulary size:", vocab_size)
-print("Number of samples:", len(dataset))
 
+train_dataset = TextDataset(
+    train_conversations,
+    tokenizer,
+    ModelConfig.context_length,
+    stride=8
+)
 
-train_size = int(0.9 * len(dataset))
-val_size = len(dataset) - train_size
-
-train_dataset, val_dataset = torch.utils.data.random_split(
-    dataset,
-    [train_size, val_size]
+val_dataset = TextDataset(
+    validation_conversations,
+    tokenizer,
+    ModelConfig.context_length,
+    stride=8
 )
 
 print("Training samples:", len(train_dataset))
 print("Validation samples:", len(val_dataset))
 
+
+# =========================
+# DataLoaders
+# =========================
 
 train_dataloader = DataLoader(
     train_dataset,
@@ -82,8 +118,7 @@ transformer = Transformer(
 
 
 lm_head = LanguageModelHead(
-    embedding_dim=ModelConfig.embedding_dim,
-    vocab_size=vocab_size
+    transformer.embedding.token_embedding.embedding.weight
 ).to(device)
 
 
@@ -97,9 +132,9 @@ print("LM Head:", next(lm_head.parameters()).device)
 # =========================
 
 optimizer = optim.AdamW(
-    list(transformer.parameters()) +
-    list(lm_head.parameters()),
-    lr=ModelConfig.learning_rate
+    transformer.parameters(),
+    lr=ModelConfig.learning_rate,
+    weight_decay=0.0
 )
 
 
@@ -107,22 +142,23 @@ optimizer = optim.AdamW(
 # Training
 # =========================
 
-epochs = 100
+epochs = 30
 
 
 print("\nStarting training...")
 training_start = time.perf_counter()
-
+best_validation_loss = float("inf")
 for epoch in range(epochs):
     if device.type == "cuda":
         torch.cuda.synchronize()
     epoch_start = time.perf_counter()
     total_loss = 0.0
 
-    for x, y in train_dataloader:
+    for x, y, loss_mask in train_dataloader:
 
         x = x.to(device)
         y = y.to(device)
+        loss_mask = loss_mask.to(device)
 
         optimizer.zero_grad()
 
@@ -130,12 +166,24 @@ for epoch in range(epochs):
 
         logits = lm_head(transformer_output)
 
-        loss = F.cross_entropy(
+        losses = F.cross_entropy(
             logits.view(-1, vocab_size),
-            y.view(-1)
+            y.view(-1),
+            reduction="none"
         )
 
+        losses = losses.view(y.shape)
+
+        loss = (
+            losses * loss_mask
+        ).sum() / loss_mask.sum()
+
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            transformer.parameters(),
+            max_norm=1.0
+        )
 
         optimizer.step()
 
@@ -151,28 +199,60 @@ for epoch in range(epochs):
 
     with torch.no_grad():
 
-        for x, y in val_dataloader:
+        for x, y, loss_mask in val_dataloader:
 
             x = x.to(device)
             y = y.to(device)
-
+            loss_mask = loss_mask.to(device)
             transformer_output = transformer(x)
             logits = lm_head(transformer_output)
 
-            loss = F.cross_entropy(
+            losses = F.cross_entropy(
                 logits.view(-1, vocab_size),
-                y.view(-1)
+                y.view(-1),
+                reduction="none"
             )
 
+            losses = losses.view(
+                y.shape
+            )
+
+            loss = (
+                losses * loss_mask
+            ).sum() / loss_mask.sum()
+
             validation_loss += loss.item()
+
 
     average_validation_loss = (
         validation_loss / len(val_dataloader)
     )
 
 
+    # Save best model
+    if average_validation_loss < best_validation_loss:
+
+        best_validation_loss = average_validation_loss
+
+        torch.save(
+            {
+                "transformer": transformer.state_dict(),
+                "lm_head": lm_head.state_dict(),
+                "vocab_size": vocab_size,
+                "tokenizer_tokens": tokenizer.tokens,
+                "tokenizer_merge_rules": tokenizer.merge_rules
+            },
+            "model.pt"
+        )
+
+        print("Best model saved!")
+
+
+    # Update learning rate
+
     transformer.train()
     lm_head.train()
+    
     if device.type == "cuda":
         torch.cuda.synchronize()
     epoch_time = time.perf_counter() - epoch_start
@@ -187,19 +267,5 @@ if device.type == "cuda":
     torch.cuda.synchronize()    
 total_time = time.perf_counter() - training_start
 print(f"\nTotal training time: {total_time:.2f}s")
-
-torch.save(
-    {
-        "transformer": transformer.state_dict(),
-        "lm_head": lm_head.state_dict(),
-
-        "vocab_size": vocab_size,
-
-        # BPE tokenizer information
-        "tokenizer_tokens": dataset.tokenizer.tokens,
-        "tokenizer_merge_rules": dataset.tokenizer.merge_rules
-    },
-    "model.pt"
-)
 
 print("\nModel saved to model.pt")

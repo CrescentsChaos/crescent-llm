@@ -1,116 +1,190 @@
-from collections import Counter
-
-
 class BPETokenizer:
 
-    def __init__(self, text, num_merges=50):
+    def __init__(
+        self,
+        text,
+        num_merges=100
+    ):
+
+        self.special_tokens = [
+            "<UNK>",
+            "<USER>",
+            "<ASSISTANT>",
+            "<END>"
+        ]
 
         self.unk_token = "<UNK>"
 
-        # Start with characters
-        words = text.split()
+        # --------------------------------------------------
+        # Build initial vocabulary.
+        # --------------------------------------------------
 
-        tokens = [
-            list(word)
-            for word in words
-        ]
+        characters = set()
 
-        # Initial vocabulary
-        self.vocabulary = set()
-        self.vocabulary.add(" ")
+        for character in text:
+            characters.add(character)
 
-        for word_tokens in tokens:
-            self.vocabulary.update(
-                word_tokens
-            )
-
-        # Store learned merge rules
-        self.merge_rules = []
-
-        # Learn BPE merges
-        for _ in range(num_merges):
-
-            pairs = Counter()
-
-            for word_tokens in tokens:
-
-                pairs.update(
-                    zip(
-                        word_tokens,
-                        word_tokens[1:]
-                    )
-                )
-
-            if not pairs:
-                break
-
-            most_common_pair, _ = (
-                pairs.most_common(1)[0]
-            )
-
-            self.merge_rules.append(
-                most_common_pair
-            )
-
-            first, second = most_common_pair
-
-            merged_token = first + second
-
-            self.vocabulary.add(
-                merged_token
-            )
-
-            # Apply merge inside every word
-            for index in range(
-                len(tokens)
-            ):
-
-                tokens[index] = (
-                    self._merge_pair(
-                        tokens[index],
-                        most_common_pair
-                    )
-                )
-
-        # Add unknown token
-        self.vocabulary.add(
-            self.unk_token
-        )
-
-        # Create token IDs
-        self.tokens = sorted(
-            self.vocabulary,
-            key=lambda x: (len(x), x)
+        self.tokens = (
+            self.special_tokens
+            + sorted(characters)
         )
 
         self.token_to_id = {
-            token: token_id
-            for token_id, token in enumerate(
-                self.tokens
-            )
+            token: index
+            for index, token in enumerate(self.tokens)
         }
 
         self.id_to_token = {
-            token_id: token
-            for token, token_id
-            in self.token_to_id.items()
+            index: token
+            for token, index in self.token_to_id.items()
         }
 
         self.unk_id = self.token_to_id[
             self.unk_token
         ]
 
+        # --------------------------------------------------
+        # Convert text into BPE symbols.
+        #
+        # Special tokens remain atomic.
+        # Everything else starts as characters.
+        # Spaces are preserved.
+        # --------------------------------------------------
+
+        symbols = []
+
+        i = 0
+
+        while i < len(text):
+
+            matched_special = None
+
+            for special_token in self.special_tokens[1:]:
+
+                if text.startswith(
+                    special_token,
+                    i
+                ):
+
+                    matched_special = special_token
+                    break
+
+            if matched_special:
+
+                symbols.append(
+                    matched_special
+                )
+
+                i += len(
+                    matched_special
+                )
+
+            else:
+
+                symbols.append(
+                    text[i]
+                )
+
+                i += 1
+
+        # --------------------------------------------------
+        # Learn BPE merge rules.
+        # --------------------------------------------------
+
+        self.merge_rules = []
+
+        for _ in range(num_merges):
+
+            pair_counts = {}
+
+            for i in range(
+                len(symbols) - 1
+            ):
+
+                left = symbols[i]
+                right = symbols[i + 1]
+
+                # Never merge special tokens.
+                if (
+                    left in self.special_tokens
+                    or right in self.special_tokens
+                ):
+                    continue
+
+                pair = (
+                    left,
+                    right
+                )
+
+                pair_counts[pair] = (
+                    pair_counts.get(
+                        pair,
+                        0
+                    )
+                    + 1
+                )
+
+            if not pair_counts:
+                break
+
+            best_pair = max(
+                pair_counts,
+                key=pair_counts.get
+            )
+
+            if pair_counts[best_pair] < 2:
+                break
+
+            self.merge_rules.append(
+                best_pair
+            )
+
+            merged_token = (
+                best_pair[0]
+                + best_pair[1]
+            )
+
+            if (
+                merged_token
+                not in self.token_to_id
+            ):
+
+                new_id = len(
+                    self.tokens
+                )
+
+                self.tokens.append(
+                    merged_token
+                )
+
+                self.token_to_id[
+                    merged_token
+                ] = new_id
+
+                self.id_to_token[
+                    new_id
+                ] = merged_token
+
+            symbols = self._merge_pair(
+                symbols,
+                best_pair
+            )
+
         self.vocab_size = len(
             self.tokens
         )
 
-    def _merge_pair(self, tokens, pair):
+    # --------------------------------------------------
+    # Merge a pair.
+    # --------------------------------------------------
 
-        first, second = pair
+    def _merge_pair(
+        self,
+        tokens,
+        pair
+    ):
 
-        merged_token = first + second
-
-        new_tokens = []
+        result = []
 
         i = 0
 
@@ -118,75 +192,136 @@ class BPETokenizer:
 
             if (
                 i < len(tokens) - 1
-                and tokens[i] == first
-                and tokens[i + 1] == second
+                and tokens[i] == pair[0]
+                and tokens[i + 1] == pair[1]
             ):
 
-                new_tokens.append(
-                    merged_token
+                result.append(
+                    tokens[i]
+                    + tokens[i + 1]
                 )
 
                 i += 2
 
             else:
 
-                new_tokens.append(
+                result.append(
                     tokens[i]
                 )
 
                 i += 1
 
-        return new_tokens
+        return result
 
-    def encode(self, text):
+    # --------------------------------------------------
+    # Encode text.
+    # --------------------------------------------------
 
-        words = text.split()
+    def encode(
+        self,
+        text
+    ):
 
-        result = []
+        # Start with characters and special tokens.
+        tokens = []
 
-        for word in words:
+        i = 0
 
-            tokens = list(word)
+        while i < len(text):
 
-            # Apply learned merges
-            for pair in self.merge_rules:
+            matched_special = None
 
-                tokens = self._merge_pair(
-                    tokens,
-                    pair
+            for special_token in self.special_tokens[1:]:
+
+                if text.startswith(
+                    special_token,
+                    i
+                ):
+
+                    matched_special = special_token
+                    break
+
+            if matched_special:
+
+                tokens.append(
+                    matched_special
                 )
 
-            for token in tokens:
-
-                result.append(
-                    self.token_to_id.get(
-                        token,
-                        self.unk_id
-                    )
+                i += len(
+                    matched_special
                 )
 
-            # Preserve the space
-            result.append(
-                self.token_to_id.get(
-                    " ",
-                    self.unk_id
+            else:
+
+                tokens.append(
+                    text[i]
                 )
+
+                i += 1
+
+        # Apply the learned merges.
+        for pair in self.merge_rules:
+
+            tokens = self._merge_pair(
+                tokens,
+                pair
             )
 
-        # Remove final space
-        if result:
-            result.pop()
+        # Convert tokens to IDs.
+        result = []
+
+        for token in tokens:
+
+            if token in self.token_to_id:
+
+                result.append(
+                    self.token_to_id[
+                        token
+                    ]
+                )
+
+            else:
+
+                # Fallback to characters.
+                for character in token:
+
+                    if (
+                        character
+                        in self.token_to_id
+                    ):
+
+                        result.append(
+                            self.token_to_id[
+                                character
+                            ]
+                        )
+
+                    else:
+
+                        result.append(
+                            self.unk_id
+                        )
 
         return result
 
-    def decode(self, token_ids):
+    # --------------------------------------------------
+    # Decode token IDs.
+    # --------------------------------------------------
 
-        tokens = [
-            self.id_to_token.get(
+    def decode(
+        self,
+        token_ids
+    ):
+
+        result = ""
+
+        for token_id in token_ids:
+
+            token = self.id_to_token.get(
                 token_id,
                 self.unk_token
             )
-            for token_id in token_ids
-        ]
 
-        return "".join(tokens)
+            result += token
+
+        return result

@@ -1,45 +1,82 @@
 import torch
 import torch.nn.functional as F
 
-from config import ModelConfig
 from model.transformer import Transformer, LanguageModelHead
+from tokenizer.bpe_tokenizer import BPETokenizer
+from config import ModelConfig
 
-
-# =========================
-# Device
-# =========================
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
 )
 
+print("Device:", device)
 
-# =========================
+
+# --------------------------------------------------
 # Load checkpoint
-# =========================
+# --------------------------------------------------
 
 checkpoint = torch.load(
     "model.pt",
-    map_location=device
+    map_location=device,
+    weights_only=False
 )
 
 vocab_size = checkpoint["vocab_size"]
-chars = checkpoint["tokenizer_chars"]
 
-char_to_id = {
-    char: i
-    for i, char in enumerate(chars)
+print("Vocabulary size:", vocab_size)
+
+
+# --------------------------------------------------
+# Reconstruct BPE tokenizer
+# --------------------------------------------------
+
+tokenizer = BPETokenizer.__new__(
+    BPETokenizer
+)
+
+tokenizer.special_tokens = [
+    "<UNK>",
+    "<USER>",
+    "<ASSISTANT>",
+    "<END>"
+]
+
+tokenizer.unk_token = "<UNK>"
+
+tokenizer.tokens = checkpoint[
+    "tokenizer_tokens"
+]
+
+tokenizer.merge_rules = checkpoint[
+    "tokenizer_merge_rules"
+]
+
+tokenizer.token_to_id = {
+    token: index
+    for index, token in enumerate(
+        tokenizer.tokens
+    )
 }
 
-id_to_char = {
-    i: char
-    for i, char in enumerate(chars)
+tokenizer.id_to_token = {
+    index: token
+    for token, index in tokenizer.token_to_id.items()
 }
 
+tokenizer.unk_id = tokenizer.token_to_id[
+    tokenizer.unk_token
+]
 
-# =========================
+tokenizer.vocab_size = len(
+    tokenizer.tokens
+)
+
+
+# --------------------------------------------------
 # Create model
-# =========================
+# --------------------------------------------------
 
 transformer = Transformer(
     vocab_size=vocab_size,
@@ -49,19 +86,14 @@ transformer = Transformer(
     num_layers=ModelConfig.num_layers
 ).to(device)
 
-lm_head = LanguageModelHead(
-    embedding_dim=ModelConfig.embedding_dim,
-    vocab_size=vocab_size
-).to(device)
-
-
-# =========================
-# Load weights
-# =========================
-
 transformer.load_state_dict(
     checkpoint["transformer"]
 )
+
+
+lm_head = LanguageModelHead(
+    transformer.embedding.token_embedding.embedding.weight
+).to(device)
 
 lm_head.load_state_dict(
     checkpoint["lm_head"]
@@ -71,99 +103,131 @@ transformer.eval()
 lm_head.eval()
 
 
-# =========================
-# Prompt
-# =========================
+# --------------------------------------------------
+# Sampling function
+# --------------------------------------------------
 
-prompt = "The "
+def sample_next_token(
+    logits,
+    temperature=0.8,
+    top_k=10
+):
 
-tokens = [
-    char_to_id.get(
-        char,
-        char_to_id["<UNK>"]
+    logits = logits / temperature
+
+    if top_k is not None:
+
+        values, indices = torch.topk(
+            logits,
+            min(
+                top_k,
+                logits.size(-1)
+            )
+        )
+
+        filtered_logits = torch.full_like(
+            logits,
+            float("-inf")
+        )
+
+        filtered_logits.scatter_(
+            -1,
+            indices,
+            values
+        )
+
+        logits = filtered_logits
+
+    probabilities = F.softmax(
+        logits,
+        dim=-1
     )
-    for char in prompt
-]
 
-x = torch.tensor(
-    [tokens],
-    dtype=torch.long,
-    device=device
+    token = torch.multinomial(
+        probabilities,
+        num_samples=1
+    )
+
+    return token.item()
+
+
+# --------------------------------------------------
+# Generate
+# --------------------------------------------------
+
+prompt = (
+    "<USER> What is Python? "
+    "<ASSISTANT> Python is a programming language"
 )
 
+tokens = tokenizer.encode(
+    prompt
+)
 
-# =========================
-# Get probabilities
-# =========================
+print("\nPrompt:")
+print(prompt)
+
+print("\nInitial tokens:")
+print(tokens)
+
+print("\nInitial token strings:")
+
+for token_id in tokens:
+
+    print(
+        token_id,
+        repr(
+            tokenizer.id_to_token.get(
+                token_id,
+                "<UNK>"
+            )
+        )
+    )
+
+
+print("\nGenerating...\n")
+
 
 with torch.no_grad():
 
-    transformer_output = transformer(x)
+    for _ in range(30):
 
-    logits = lm_head(transformer_output)
+        input_tokens = tokens[
+            -ModelConfig.context_length:
+        ]
 
-    next_token_logits = logits[:, -1, :]
+        x = torch.tensor(
+            [input_tokens],
+            dtype=torch.long,
+            device=device
+        )
 
-    probabilities = F.softmax(
-        next_token_logits,
-        dim=-1
-    )[0]
+        hidden = transformer(x)
+
+        logits = lm_head(hidden)
+
+        next_logits = logits[
+            0,
+            -1
+        ]
+
+        next_token = torch.argmax(
+    next_logits
+).item()
+
+        tokens.append(
+            next_token
+        )
+
+        if next_token == tokenizer.token_to_id[
+            "<END>"
+        ]:
+
+            break
 
 
-# =========================
-# Sample 1000 times
-# =========================
+print("Generated:")
 
-samples = torch.multinomial(
-    probabilities,
-    num_samples=1000,
-    replacement=True
+print(
+    tokenizer.decode(tokens)
 )
-
-
-# =========================
-# Count samples
-# =========================
-
-counts = torch.bincount(
-    samples,
-    minlength=vocab_size
-)
-
-
-# =========================
-# Display
-# =========================
-
-print("Prompt:", repr(prompt))
-
-print("\nSampling 1000 times:\n")
-
-for token_id in torch.argsort(
-    counts,
-    descending=True
-):
-
-    token_id = token_id.item()
-
-    count = counts[token_id].item()
-
-    if count == 0:
-        continue
-
-    model_probability = (
-        probabilities[token_id].item() * 100
-    )
-
-    actual_percentage = (
-        count / 1000 * 100
-    )
-
-    token = id_to_char[token_id]
-
-    print(
-        f"{repr(token):8s} "
-        f"Model: {model_probability:6.2f}% "
-        f"Samples: {actual_percentage:6.2f}% "
-        f"({count})"
-    )

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Training Data Builder</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f4f4f5;margin:0;padding:40px;color:#18181b}
+.container{max-width:800px;margin:auto;background:white;padding:25px;border-radius:12px;box-shadow:0 4px 16px #0001}
+h1{margin-top:0}
+h3{margin-bottom:8px}
+label{display:block;font-weight:bold;margin:18px 0 8px}
+textarea{width:100%;min-height:130px;resize:vertical;padding:12px;border:1px solid #ccc;border-radius:8px;font:inherit}
+button{margin-top:20px;padding:12px 18px;border:0;border-radius:8px;background:#18181b;color:white;font-size:15px;cursor:pointer}
+button:hover{opacity:.85}
+button:disabled{opacity:.45;cursor:default}
+button.secondary{background:white;color:#18181b;border:1px solid #c4c4c8}
+.status{margin-top:16px;padding:12px;border-radius:8px;display:none;white-space:pre-line}
+.success{background:#dcfce7;color:#166534}
+.error{background:#fee2e2;color:#991b1b}
+.info{background:#e0e7ff;color:#3730a3}
+.preview{margin-top:20px;background:#18181b;color:#eee;padding:16px;border-radius:8px;white-space:pre-wrap;font-family:Consolas,monospace}
+.toolbar{margin-top:32px;padding-top:20px;border-top:1px solid #e4e4e7}
+.toolbar p{margin:0;color:#52525b;font-size:14px}
+.counts{margin-top:14px;font-size:14px;color:#52525b}
+.counts strong{color:#18181b}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Training Data Builder</h1>
+<p>Add a User/Assistant pair and append it directly to <code>data/raw/training.txt</code>.</p>
+
+<label for="user">User</label>
+<textarea id="user" placeholder="Enter the user's message..."></textarea>
+
+<label for="assistant">Assistant</label>
+<textarea id="assistant" placeholder="Enter the assistant's response..."></textarea>
+
+<button onclick="addConversation()">Add to Training Data</button>
+<div id="status" class="status"></div>
+
+<h3>Preview</h3>
+<div id="preview" class="preview">&lt;USER&gt; Your question &lt;ASSISTANT&gt; Your answer &lt;END&gt;</div>
+
+<div class="toolbar">
+  <h3>Clean up the file</h3>
+  <p>Removes blank lines, collapses stray spaces and line breaks inside a
+     conversation, and deletes repeated conversations. The original file is
+     copied to <code>training.backup.txt</code> first.</p>
+  <button id="cleanupButton" class="secondary" onclick="cleanUp()">Clean up training.txt</button>
+  <div id="counts" class="counts"></div>
+</div>
+</div>
+
+<script>
+const user = document.getElementById('user');
+const assistant = document.getElementById('assistant');
+const preview = document.getElementById('preview');
+const status = document.getElementById('status');
+const counts = document.getElementById('counts');
+const cleanupButton = document.getElementById('cleanupButton');
+
+function updatePreview() {
+  const u = user.value.trim(), a = assistant.value.trim();
+  preview.textContent = u || a
+    ? `<USER> ${collapse(u)} <ASSISTANT> ${collapse(a)} <END>`
+    : `<USER> Your question <ASSISTANT> Your answer <END>`;
+}
+
+function collapse(text) {
+  return text.split(/\s+/).filter(Boolean).join(' ');
+}
+
+user.addEventListener('input', updatePreview);
+assistant.addEventListener('input', updatePreview);
+
+async function addConversation() {
+  const u = user.value.trim(), a = assistant.value.trim();
+  if (!u || !a) { showStatus('Please fill in both User and Assistant.', 'error'); return; }
+  try {
+    const r = await fetch('/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: u, assistant: a })
+    });
+    const result = await r.json();
+    if (!r.ok) throw new Error(result.error || 'Failed to save data.');
+    showStatus('Conversation added.', 'success');
+    user.value = ''; assistant.value = ''; updatePreview(); user.focus();
+    loadCounts();
+  } catch (e) { showStatus(e.message, 'error'); }
+}
+
+async function cleanUp() {
+  cleanupButton.disabled = true;
+  try {
+    const plan = await postCleanup(true);
+
+    const nothingToDo =
+      plan.duplicates_removed === 0 &&
+      plan.blank_removed === 0 &&
+      plan.whitespace_fixed === 0;
+
+    if (nothingToDo) {
+      showStatus(`Nothing to clean. ${plan.after} conversations, all unique.`, 'info');
+      return;
+    }
+
+    const summary =
+      `Clean up training.txt?\n\n` +
+      `Duplicate conversations to delete: ${plan.duplicates_removed}\n` +
+      `Blank lines to delete: ${plan.blank_removed}\n` +
+      `Lines with extra spaces to fix: ${plan.whitespace_fixed}\n\n` +
+      `${plan.before} lines now, ${plan.after} after.`;
+
+    if (!confirm(summary)) { showStatus('Clean-up cancelled. Nothing changed.', 'info'); return; }
+
+    const result = await postCleanup(false);
+    showStatus(
+      `Cleaned up.\n` +
+      `Deleted ${result.duplicates_removed} duplicate conversations and ` +
+      `${result.blank_removed} blank lines, fixed spacing on ${result.whitespace_fixed} lines.\n` +
+      `${result.after} conversations left. Backup saved to training.backup.txt.`,
+      'success'
+    );
+    loadCounts();
+  } catch (e) {
+    showStatus(e.message, 'error');
+  } finally {
+    cleanupButton.disabled = false;
+  }
+}
+
+async function postCleanup(dryRun) {
+  const r = await fetch('/cleanup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: dryRun })
+  });
+  const result = await r.json();
+  if (!r.ok) throw new Error(result.error || 'Clean-up failed.');
+  return result;
+}
+
+async function loadCounts() {
+  try {
+    const r = await fetch('/stats');
+    const s = await r.json();
+    let text = `<strong>${s.conversations}</strong> unique conversations`;
+    if (s.duplicates) text += ` &middot; ${s.duplicates} duplicates`;
+    if (s.blank_lines) text += ` &middot; ${s.blank_lines} blank lines`;
+    if (s.malformed) text += ` &middot; ${s.malformed} missing a tag`;
+    counts.innerHTML = text;
+  } catch (e) {
+    counts.textContent = '';
+  }
+}
+
+function showStatus(message, kind) {
+  status.textContent = message;
+  status.className = 'status ' + kind;
+  status.style.display = 'block';
+  clearTimeout(showStatus.timer);
+  showStatus.timer = setTimeout(() => status.style.display = 'none', 6000);
+}
+
+loadCounts();
+</script>
+</body>
+</html>

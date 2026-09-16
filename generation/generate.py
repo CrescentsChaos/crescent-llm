@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from config import ModelConfig
 from model.transformer import Transformer, LanguageModelHead
@@ -41,18 +40,35 @@ merge_rules = checkpoint[
 # Rebuild tokenizer
 # =========================
 
+tokenizer_tokens = checkpoint[
+    "tokenizer_tokens"
+]
+
+merge_rules = [
+    tuple(pair)
+    for pair in checkpoint[
+        "tokenizer_merge_rules"
+    ]
+]
+
 token_to_id = {
-    token: token_id
-    for token_id, token
+    token: index
+    for index, token
     in enumerate(tokenizer_tokens)
 }
 
 id_to_token = {
-    token_id: token
-    for token_id, token
+    index: token
+    for index, token
     in enumerate(tokenizer_tokens)
 }
 
+special_tokens = [
+    "<UNK>",
+    "<USER>",
+    "<ASSISTANT>",
+    "<END>"
+]
 
 unk_token = "<UNK>"
 
@@ -67,7 +83,7 @@ def merge_pair(tokens, pair):
 
     merged_token = first + second
 
-    new_tokens = []
+    result = []
 
     i = 0
 
@@ -79,7 +95,7 @@ def merge_pair(tokens, pair):
             and tokens[i + 1] == second
         ):
 
-            new_tokens.append(
+            result.append(
                 merged_token
             )
 
@@ -87,65 +103,106 @@ def merge_pair(tokens, pair):
 
         else:
 
-            new_tokens.append(
+            result.append(
                 tokens[i]
             )
 
             i += 1
 
-    return new_tokens
+    return result
 
 
 def encode(text):
 
-    words = text.split()
+    tokens = []
+
+    i = 0
+
+    while i < len(text):
+
+        matched_special = None
+
+        for special_token in special_tokens[1:]:
+
+            if text.startswith(
+                special_token,
+                i
+            ):
+
+                matched_special = special_token
+
+                break
+
+        if matched_special:
+
+            tokens.append(
+                matched_special
+            )
+
+            i += len(
+                matched_special
+            )
+
+        else:
+
+            tokens.append(
+                text[i]
+            )
+
+            i += 1
+
+    for pair in merge_rules:
+
+        tokens = merge_pair(
+            tokens,
+            pair
+        )
 
     result = []
 
-    for word in words:
+    for token in tokens:
 
-        tokens = list(word)
-
-        # Apply BPE merge rules
-        for pair in merge_rules:
-
-            tokens = merge_pair(
-                tokens,
-                pair
-            )
-
-        for token in tokens:
+        if token in token_to_id:
 
             result.append(
-                token_to_id.get(
-                    token,
-                    unk_id
-                )
+                token_to_id[token]
             )
 
-        # Preserve space
-        result.append(
-            token_to_id[" "]
-        )
+        else:
 
-    # Remove final space
-    if result:
+            for character in token:
 
-        result.pop()
+                if character in token_to_id:
+
+                    result.append(
+                        token_to_id[
+                            character
+                        ]
+                    )
+
+                else:
+
+                    result.append(
+                        unk_id
+                    )
 
     return result
 
 
 def decode(token_ids):
 
-    return "".join(
-        id_to_token.get(
+    result = ""
+
+    for token_id in token_ids:
+
+        token = id_to_token.get(
             token_id,
             unk_token
         )
-        for token_id in token_ids
-    )
 
+        result += token
+
+    return result
 
 # =========================
 # Build model
@@ -161,8 +218,7 @@ transformer = Transformer(
 
 
 lm_head = LanguageModelHead(
-    embedding_dim=ModelConfig.embedding_dim,
-    vocab_size=vocab_size
+    transformer.embedding.token_embedding.embedding.weight
 ).to(device)
 
 
@@ -196,8 +252,17 @@ prompt = input(
     "Enter a prompt: "
 )
 
+formatted_prompt = (
+    "<USER> "
+    + prompt
+    + " <ASSISTANT>"
+)
 
-tokens = encode(prompt)
+tokens = encode(
+    formatted_prompt
+)
+prompt_length = len(tokens)
+
 
 
 print("\nPrompt tokens:")
@@ -212,7 +277,7 @@ print(decode(tokens))
 # Generation
 # =========================
 
-max_new_tokens = 100
+max_new_tokens = 150
 
 with torch.no_grad():
 
@@ -242,52 +307,51 @@ with torch.no_grad():
             logits[:, -1, :]
         )
 
-        temperature = 0.8
-
-        top_k = 5
-
-        scaled_logits = (
-            next_token_logits
-            / temperature
-        )
-
-        top_k_values, top_k_indices = (
-            torch.topk(
-                scaled_logits,
-                top_k,
-                dim=-1
-            )
-        )
-
-        probabilities = F.softmax(
-            top_k_values,
-            dim=-1
-        )
-
-        sampled_index = torch.multinomial(
-            probabilities,
-            num_samples=1
-        )
-
-        next_token = (
-            top_k_indices[
-                0,
-                sampled_index
-            ].item()
-        )
+        next_token = torch.argmax(
+    next_token_logits,
+    dim=-1
+).item()
 
         tokens.append(
             next_token
         )
+
+        if next_token == token_to_id["<END>"]:
+            break
 
 
 # =========================
 # Output
 # =========================
 
+generated_tokens = tokens[
+    prompt_length:
+]
+
 generated_text = decode(
-    tokens
+    generated_tokens
 )
 
-print("\nGenerated text:")
-print(generated_text)
+# Remove everything after <END>
+if "<END>" in generated_text:
+
+    generated_text = generated_text.split(
+        "<END>",
+        1
+    )[0]
+
+# Remove conversation markers if generated
+generated_text = generated_text.replace(
+    "<ASSISTANT>",
+    ""
+)
+
+generated_text = generated_text.replace(
+    "<USER>",
+    ""
+)
+
+print("\nAssistant:")
+print(
+    generated_text.strip()
+)

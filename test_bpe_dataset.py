@@ -37,7 +37,7 @@ print(
 
 
 # Get one training sample
-x, y = dataset[0]
+x, y, loss_mask = dataset[0]
 
 
 print("\nSample shapes:")
