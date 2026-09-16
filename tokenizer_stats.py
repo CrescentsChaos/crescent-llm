@@ -1,10 +1,7 @@
-from tokenizer.tokenizer import CharacterTokenizer
+from tokenizer.bpe_tokenizer import BPETokenizer
 
 
-# =========================
 # Load training text
-# =========================
-
 with open(
     "data/raw/training.txt",
     "r",
@@ -13,73 +10,43 @@ with open(
     text = file.read()
 
 
-# =========================
-# Create tokenizer
-# =========================
-
-tokenizer = CharacterTokenizer(text)
-
-tokens = tokenizer.encode(text)
-
-
-# =========================
-# Statistics
-# =========================
-
-character_count = len(text)
-
-word_count = len(text.split())
-
-token_count = len(tokens)
-
-unique_characters = len(
-    set(text)
+# Train BPE tokenizer
+tokenizer = BPETokenizer(
+    text,
+    num_merges=50
 )
 
 
-print("Tokenizer Statistics")
-print("====================")
+print("BPE Vocabulary")
+print("==============")
 
 print(
-    f"Characters:          {character_count}"
-)
-
-print(
-    f"Words:               {word_count}"
-)
-
-print(
-    f"Tokens:              {token_count}"
-)
-
-print(
-    f"Unique characters:   {unique_characters}"
-)
-
-print(
-    f"Vocabulary size:     {tokenizer.vocab_size}"
+    "Vocabulary size:",
+    tokenizer.vocab_size
 )
 
 
-# =========================
-# Tokenization examples
-# =========================
+print("\nTokens:")
 
-examples = [
-    "The cat",
-    "transformer",
-    "machine learning",
-    "The bird flies"
-]
+for token_id, token in tokenizer.id_to_token.items():
+
+    print(
+        f"{token_id:3d}  {repr(token)}"
+    )
 
 
-print("\nTokenization Examples")
-print("=====================")
+print("\nLearned Merge Rules")
+print("===================")
 
-for example in examples:
+for number, pair in enumerate(
+    tokenizer.merge_rules,
+    start=1
+):
 
-    encoded = tokenizer.encode(example)
-
-    print(f"\nText:   {example}")
-    print(f"Tokens: {len(encoded)}")
-    print(f"IDs:    {encoded}")
+    print(
+        f"{number:2d}. "
+        f"{repr(pair[0])} + "
+        f"{repr(pair[1])}"
+        f" → "
+        f"{repr(pair[0] + pair[1])}"
+    )
