@@ -1,13 +1,20 @@
 import torch
 
-from tokenizer.tokenizer import CharacterTokenizer
+from tokenizer.bpe_tokenizer import BPETokenizer
 
 
 class TextDataset:
 
-    def __init__(self, text, context_length):
+    def __init__(
+        self,
+        text,
+        context_length
+    ):
 
-        self.tokenizer = CharacterTokenizer(text)
+        self.tokenizer = BPETokenizer(
+            text,
+            num_merges=50
+        )
 
         self.tokens = torch.tensor(
             self.tokenizer.encode(text),
@@ -17,7 +24,11 @@ class TextDataset:
         self.context_length = context_length
 
     def __len__(self):
-        return len(self.tokens) - self.context_length
+
+        return (
+            len(self.tokens)
+            - self.context_length
+        )
 
     def __getitem__(self, index):
 

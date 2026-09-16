@@ -38,7 +38,7 @@ dataset = TextDataset(
 
 vocab_size = dataset.tokenizer.vocab_size
 
-print("\nDataset created.")
+print("\nBPE dataset created.")
 print("Vocabulary size:", vocab_size)
 print("Number of samples:", len(dataset))
 
@@ -192,8 +192,12 @@ torch.save(
     {
         "transformer": transformer.state_dict(),
         "lm_head": lm_head.state_dict(),
+
         "vocab_size": vocab_size,
-        "tokenizer_chars": dataset.tokenizer.chars
+
+        # BPE tokenizer information
+        "tokenizer_tokens": dataset.tokenizer.tokens,
+        "tokenizer_merge_rules": dataset.tokenizer.merge_rules
     },
     "model.pt"
 )

@@ -1,3 +1,4 @@
+from tokenizer.tokenizer import CharacterTokenizer
 from tokenizer.bpe_tokenizer import BPETokenizer
 
 
@@ -10,43 +11,82 @@ with open(
     text = file.read()
 
 
-# Train BPE tokenizer
-tokenizer = BPETokenizer(
+# Character tokenizer
+character_tokenizer = CharacterTokenizer(text)
+
+character_tokens = character_tokenizer.encode(text)
+
+
+# BPE tokenizer
+bpe_tokenizer = BPETokenizer(
     text,
     num_merges=50
 )
 
+bpe_tokens = bpe_tokenizer.encode(text)
 
-print("BPE Vocabulary")
-print("==============")
+
+# Calculate statistics
+character_count = len(character_tokens)
+bpe_count = len(bpe_tokens)
+
+tokens_saved = character_count - bpe_count
+
+reduction_percentage = (
+    tokens_saved / character_count
+) * 100
+
+
+print("Tokenizer Comparison")
+print("====================")
 
 print(
-    "Vocabulary size:",
-    tokenizer.vocab_size
+    "Characters:",
+    len(text)
+)
+
+print(
+    "Character tokens:",
+    character_count
+)
+
+print(
+    "BPE tokens:",
+    bpe_count
+)
+
+print(
+    "Tokens saved:",
+    tokens_saved
+)
+
+print(
+    "Token reduction:",
+    f"{reduction_percentage:.2f}%"
+)
+
+print(
+    "Character vocabulary:",
+    character_tokenizer.vocab_size
+)
+
+print(
+    "BPE vocabulary:",
+    bpe_tokenizer.vocab_size
 )
 
 
-print("\nTokens:")
-
-for token_id, token in tokenizer.id_to_token.items():
-
-    print(
-        f"{token_id:3d}  {repr(token)}"
-    )
-
-
-print("\nLearned Merge Rules")
-print("===================")
+print("\nBPE Merge Rules")
+print("================")
 
 for number, pair in enumerate(
-    tokenizer.merge_rules,
+    bpe_tokenizer.merge_rules,
     start=1
 ):
 
     print(
         f"{number:2d}. "
         f"{repr(pair[0])} + "
-        f"{repr(pair[1])}"
-        f" → "
+        f"{repr(pair[1])} → "
         f"{repr(pair[0] + pair[1])}"
     )

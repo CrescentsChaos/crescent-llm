@@ -15,7 +15,7 @@ device = torch.device(
 
 
 # =========================
-# Load trained model
+# Load checkpoint
 # =========================
 
 checkpoint = torch.load(
@@ -23,22 +23,132 @@ checkpoint = torch.load(
     map_location=device
 )
 
-vocab_size = checkpoint["vocab_size"]
-chars = checkpoint["tokenizer_chars"]
 
-char_to_id = {
-    char: i
-    for i, char in enumerate(chars)
-}
+vocab_size = checkpoint[
+    "vocab_size"
+]
 
-id_to_char = {
-    i: char
-    for i, char in enumerate(chars)
-}
+tokenizer_tokens = checkpoint[
+    "tokenizer_tokens"
+]
+
+merge_rules = checkpoint[
+    "tokenizer_merge_rules"
+]
 
 
 # =========================
-# Create model
+# Rebuild tokenizer
+# =========================
+
+token_to_id = {
+    token: token_id
+    for token_id, token
+    in enumerate(tokenizer_tokens)
+}
+
+id_to_token = {
+    token_id: token
+    for token_id, token
+    in enumerate(tokenizer_tokens)
+}
+
+
+unk_token = "<UNK>"
+
+unk_id = token_to_id[
+    unk_token
+]
+
+
+def merge_pair(tokens, pair):
+
+    first, second = pair
+
+    merged_token = first + second
+
+    new_tokens = []
+
+    i = 0
+
+    while i < len(tokens):
+
+        if (
+            i < len(tokens) - 1
+            and tokens[i] == first
+            and tokens[i + 1] == second
+        ):
+
+            new_tokens.append(
+                merged_token
+            )
+
+            i += 2
+
+        else:
+
+            new_tokens.append(
+                tokens[i]
+            )
+
+            i += 1
+
+    return new_tokens
+
+
+def encode(text):
+
+    words = text.split()
+
+    result = []
+
+    for word in words:
+
+        tokens = list(word)
+
+        # Apply BPE merge rules
+        for pair in merge_rules:
+
+            tokens = merge_pair(
+                tokens,
+                pair
+            )
+
+        for token in tokens:
+
+            result.append(
+                token_to_id.get(
+                    token,
+                    unk_id
+                )
+            )
+
+        # Preserve space
+        result.append(
+            token_to_id[" "]
+        )
+
+    # Remove final space
+    if result:
+
+        result.pop()
+
+    return result
+
+
+def decode(token_ids):
+
+    return "".join(
+        id_to_token.get(
+            token_id,
+            unk_token
+        )
+        for token_id in token_ids
+    )
+
+
+# =========================
+# Build model
 # =========================
 
 transformer = Transformer(
@@ -57,7 +167,7 @@ lm_head = LanguageModelHead(
 
 
 # =========================
-# Load weights
+# Load model weights
 # =========================
 
 transformer.load_state_dict(
@@ -73,32 +183,46 @@ transformer.eval()
 lm_head.eval()
 
 
-print("Model loaded.")
+print("BPE model loaded.")
 print("Device:", device)
+print("Vocabulary size:", vocab_size)
+
+
+# =========================
+# Prompt
+# =========================
+
+prompt = input(
+    "Enter a prompt: "
+)
+
+
+tokens = encode(prompt)
+
+
+print("\nPrompt tokens:")
+print(tokens)
+
+
+print("\nPrompt decoded:")
+print(decode(tokens))
 
 
 # =========================
 # Generation
 # =========================
 
-prompt = input("Enter a prompt: ")
-
-unk_id = char_to_id["<UNK>"]
-
-tokens = [
-    char_to_id.get(char, unk_id)
-    for char in prompt
-]
-
-
 max_new_tokens = 100
-
 
 with torch.no_grad():
 
-    for _ in range(max_new_tokens):
+    for _ in range(
+        max_new_tokens
+    ):
 
-        input_tokens = tokens[-ModelConfig.context_length:]
+        input_tokens = tokens[
+            -ModelConfig.context_length:
+        ]
 
         x = torch.tensor(
             [input_tokens],
@@ -106,21 +230,33 @@ with torch.no_grad():
             device=device
         )
 
-        transformer_output = transformer(x)
+        transformer_output = transformer(
+            x
+        )
 
-        logits = lm_head(transformer_output)
+        logits = lm_head(
+            transformer_output
+        )
 
-        next_token_logits = logits[:, -1, :]
+        next_token_logits = (
+            logits[:, -1, :]
+        )
 
         temperature = 0.8
+
         top_k = 5
 
-        scaled_logits = next_token_logits / temperature
+        scaled_logits = (
+            next_token_logits
+            / temperature
+        )
 
-        top_k_values, top_k_indices = torch.topk(
-            scaled_logits,
-            top_k,
-            dim=-1
+        top_k_values, top_k_indices = (
+            torch.topk(
+                scaled_logits,
+                top_k,
+                dim=-1
+            )
         )
 
         probabilities = F.softmax(
@@ -133,19 +269,25 @@ with torch.no_grad():
             num_samples=1
         )
 
-        next_token = top_k_indices[
-            0,
-            sampled_index
-        ].item()
+        next_token = (
+            top_k_indices[
+                0,
+                sampled_index
+            ].item()
+        )
 
-        tokens.append(next_token)
+        tokens.append(
+            next_token
+        )
 
 
-generated_text = "".join(
-    id_to_char[token]
-    for token in tokens
+# =========================
+# Output
+# =========================
+
+generated_text = decode(
+    tokens
 )
-
 
 print("\nGenerated text:")
 print(generated_text)
