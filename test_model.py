@@ -29,7 +29,16 @@ tokens = torch.tensor([
 x = embedding(tokens)
 
 (Q, K, V, scores, attention_weights, attention_output) = attention(x)
-
+residual_output = x + attention_output
+normalized_output = attention.layer_norm(
+    residual_output
+)
+ffn_hidden = attention.fc1(
+    normalized_output
+)
+ffn_activated = attention.gelu(
+    ffn_hidden
+)
 
 print("Input:")
 print(x.shape)
@@ -54,3 +63,21 @@ print(attention_weights[0, 0])
 
 print("\nAttention Output:")
 print(attention_output.shape)
+
+print("\nResidual Output:")
+print(residual_output.shape)
+
+print("\nNormalized Output:")
+print(normalized_output.shape)
+
+print("\nNormalized Mean:")
+print(normalized_output.mean())
+
+print("\nNormalized Standard Deviation:")
+print(normalized_output.std())
+
+print("\nFFN Hidden:")
+print(ffn_hidden.shape)
+
+print("\nFFN After GELU:")
+print(ffn_activated.shape)

@@ -89,6 +89,18 @@ class SelfAttention(nn.Module):
             embedding_dim,
             embedding_dim
         )
+        self.output_projection = nn.Linear(
+            embedding_dim,
+            embedding_dim
+        )
+        self.layer_norm = nn.LayerNorm(
+            embedding_dim
+        )
+        self.fc1 = nn.Linear(
+            embedding_dim,
+            4 * embedding_dim
+        )
+        self.gelu = nn.GELU()
 
         # Create a lower-triangular mask
         self.register_buffer(
@@ -162,6 +174,9 @@ class SelfAttention(nn.Module):
             attention_output.shape[0],
             attention_output.shape[1],
             self.embedding_dim
+        )
+        attention_output = self.output_projection(
+            attention_output
         )
 
         return (Q, K, V, scores, attention_weights, attention_output)
