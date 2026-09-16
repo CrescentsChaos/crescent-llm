@@ -14,14 +14,15 @@ embedding = InputEmbedding(
 )
 
 attention = SelfAttention(
-    embedding_dim=ModelConfig.embedding_dim,
-    context_length=ModelConfig.context_length
+    ModelConfig.embedding_dim,
+    ModelConfig.num_heads,
+    ModelConfig.context_length
 )
 
 
 tokens = torch.tensor([
-    [6, 14, 11, 1],
-    [9, 7, 25, 1]
+    [6, 14, 11, 1, 9, 7],
+    [9, 7, 25, 1, 6, 14]
 ])
 
 
@@ -42,8 +43,5 @@ print(K.shape)
 print("\nValue:")
 print(V.shape)
 
-print("\nAttention scores:")
+print("\nAttention Scores:")
 print(scores.shape)
-
-print("\nFirst example's scores:")
-print(scores[0])

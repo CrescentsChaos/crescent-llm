@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 
 
 class TokenEmbedding(nn.Module):
@@ -64,8 +65,15 @@ class InputEmbedding(nn.Module):
         return token_vectors + position_vectors
 class SelfAttention(nn.Module):
 
-    def __init__(self, embedding_dim, context_length):
+    def __init__(self, embedding_dim, num_heads, context_length):
         super().__init__()
+
+        self.embedding_dim = embedding_dim
+        self.num_heads = num_heads
+
+        assert embedding_dim % num_heads == 0
+
+        self.head_dim = embedding_dim // num_heads
 
         self.query = nn.Linear(
             embedding_dim,
@@ -99,22 +107,40 @@ class SelfAttention(nn.Module):
         K = self.key(x)
         V = self.value(x)
 
-        # Calculate attention scores
-        scores = Q @ K.transpose(-2, -1)
-
-        # Get current sequence length
-        sequence_length = x.size(1)
-
-        # Hide future tokens
-        scores = scores.masked_fill(
-            self.mask[
-                :sequence_length,
-                :sequence_length
-            ] == 0,
-            float("-inf")
+        # Split embedding dimension into multiple heads
+        Q = Q.view(
+            Q.shape[0],
+            Q.shape[1],
+            self.num_heads,
+            self.head_dim
         )
-        attention_weights = torch.softmax(
-    scores,dim=-1
-)
 
-        return Q, K, V, scores, attention_weights
+        K = K.view(
+            K.shape[0],
+            K.shape[1],
+            self.num_heads,
+            self.head_dim
+        )
+
+        V = V.view(
+            V.shape[0],
+            V.shape[1],
+            self.num_heads,
+            self.head_dim
+        )
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+
+        scores = (
+        Q @ K.transpose(-2, -1)
+    ) / math.sqrt(self.head_dim)
+
+        print("Q:", Q.shape)
+        print("K:", K.shape)
+        print("V:", V.shape)
+
+        print("Number of heads:", self.num_heads)
+        print("Head dimension:", self.head_dim)
+
+        return Q, K, V, scores
