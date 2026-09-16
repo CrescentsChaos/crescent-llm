@@ -136,6 +136,23 @@ class SelfAttention(nn.Module):
         Q @ K.transpose(-2, -1)
     ) / math.sqrt(self.head_dim)
 
+        # Get current sequence length
+        sequence_length = x.size(1)
+
+        # Hide future tokens
+        scores = scores.masked_fill(
+            self.mask[
+                :sequence_length,
+                :sequence_length
+            ] == 0,
+            float("-inf")
+        )
+        # Convert scores into attention probabilities
+        attention_weights = torch.softmax(
+            scores,
+            dim=-1
+        )
+
         print("Q:", Q.shape)
         print("K:", K.shape)
         print("V:", V.shape)
@@ -143,4 +160,4 @@ class SelfAttention(nn.Module):
         print("Number of heads:", self.num_heads)
         print("Head dimension:", self.head_dim)
 
-        return Q, K, V, scores
+        return Q, K, V, scores, attention_weights
