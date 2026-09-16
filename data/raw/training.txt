@@ -1,0 +1,35 @@
+The cat is sitting on the grass.
+The dog is running through the field.
+The bird is flying above the trees.
+The fox is walking through the forest.
+The rabbit is eating a small green leaf.
+
+Animals live in many different environments.
+A cat can walk quietly through a garden.
+A dog can run quickly across an open field.
+A bird can fly high above the ground.
+A fox can move silently through the forest.
+A rabbit can hide among the grass.
+
+The sun rises in the morning.
+The sky becomes bright during the day.
+The moon appears in the night sky.
+Stars can be seen when the sky is clear.
+
+The cat sees the bird.
+The bird sees the cat.
+The dog sees the rabbit.
+The rabbit hears the dog.
+The fox watches the forest.
+
+A small animal walks through the forest.
+The animal sees a tree.
+The tree has green leaves.
+The wind moves the leaves.
+The animal continues walking.
+
+Learning takes time.
+A machine can learn patterns from data.
+A language model learns patterns from text.
+The model reads many examples.
+The model tries to predict what comes next.
