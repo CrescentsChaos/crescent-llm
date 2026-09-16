@@ -1,32 +1,41 @@
 class CharacterTokenizer:
-
     def __init__(self, text):
-        # Create vocabulary from all unique characters
+
+        self.unk_token = "<UNK>"
+
         self.chars = sorted(list(set(text)))
 
-        # Character -> integer
+        if self.unk_token not in self.chars:
+            self.chars.append(self.unk_token)
+
         self.char_to_id = {
             char: i
             for i, char in enumerate(self.chars)
         }
 
-        # Integer -> character
         self.id_to_char = {
             i: char
             for i, char in enumerate(self.chars)
         }
 
+        self.unk_id = self.char_to_id[self.unk_token]
+
         self.vocab_size = len(self.chars)
 
+
     def encode(self, text):
-        """Convert text into token IDs."""
+
         return [
-            self.char_to_id[char]
+            self.char_to_id.get(
+                char,
+                self.unk_id
+            )
             for char in text
         ]
 
+
     def decode(self, tokens):
-        """Convert token IDs back into text."""
+
         return "".join(
             self.id_to_char[token]
             for token in tokens

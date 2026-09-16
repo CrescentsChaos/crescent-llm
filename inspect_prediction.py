@@ -15,7 +15,7 @@ device = torch.device(
 
 
 # =========================
-# Load trained model
+# Load checkpoint
 # =========================
 
 checkpoint = torch.load(
@@ -25,6 +25,7 @@ checkpoint = torch.load(
 
 vocab_size = checkpoint["vocab_size"]
 chars = checkpoint["tokenizer_chars"]
+
 
 char_to_id = {
     char: i
@@ -73,79 +74,71 @@ transformer.eval()
 lm_head.eval()
 
 
-print("Model loaded.")
-print("Device:", device)
-
-
 # =========================
-# Generation
+# Prompt
 # =========================
 
-prompt = input("Enter a prompt: ")
+prompt = input("Enter text: ")
 
-unk_id = char_to_id["<UNK>"]
 
 tokens = [
-    char_to_id.get(char, unk_id)
+    char_to_id.get(
+        char,
+        char_to_id["<UNK>"]
+    )
     for char in prompt
 ]
 
 
-max_new_tokens = 100
-
-
-with torch.no_grad():
-
-    for _ in range(max_new_tokens):
-
-        input_tokens = tokens[-ModelConfig.context_length:]
-
-        x = torch.tensor(
-            [input_tokens],
-            dtype=torch.long,
-            device=device
-        )
-
-        transformer_output = transformer(x)
-
-        logits = lm_head(transformer_output)
-
-        next_token_logits = logits[:, -1, :]
-
-        temperature = 0.8
-        top_k = 5
-
-        scaled_logits = next_token_logits / temperature
-
-        top_k_values, top_k_indices = torch.topk(
-            scaled_logits,
-            top_k,
-            dim=-1
-        )
-
-        probabilities = F.softmax(
-            top_k_values,
-            dim=-1
-        )
-
-        sampled_index = torch.multinomial(
-            probabilities,
-            num_samples=1
-        )
-
-        next_token = top_k_indices[
-            0,
-            sampled_index
-        ].item()
-
-        tokens.append(next_token)
-
-
-generated_text = "".join(
-    id_to_char[token]
-    for token in tokens
+x = torch.tensor(
+    [tokens],
+    dtype=torch.long,
+    device=device
 )
 
 
-print("\nGenerated text:")
-print(generated_text)
+# =========================
+# Model prediction
+# =========================
+
+with torch.no_grad():
+
+    transformer_output = transformer(x)
+
+    logits = lm_head(transformer_output)
+
+    next_token_logits = logits[:, -1, :]
+
+    probabilities = F.softmax(
+        next_token_logits,
+        dim=-1
+    )[0]
+
+
+# =========================
+# Show predictions
+# =========================
+
+top_k = min(10, vocab_size)
+
+values, indices = torch.topk(
+    probabilities,
+    top_k
+)
+
+
+print("\nPrompt:")
+print(prompt)
+
+print("\nTop predictions for the NEXT character:")
+
+for probability, token_id in zip(values, indices):
+
+    token = id_to_char[token_id.item()]
+    logit = next_token_logits[0, token_id].item()
+
+    print(
+        f"{repr(token):8s} "
+        f"Logit: {logit:8.4f} "
+        f"Probability: {probability.item() * 100:6.2f}%"
+    )

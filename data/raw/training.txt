@@ -1,35 +1,64 @@
 The cat is sitting on the grass.
-The dog is running through the field.
-The bird is flying above the trees.
-The fox is walking through the forest.
-The rabbit is eating a small green leaf.
-
-Animals live in many different environments.
-A cat can walk quietly through a garden.
-A dog can run quickly across an open field.
-A bird can fly high above the ground.
-A fox can move silently through the forest.
-A rabbit can hide among the grass.
-
-The sun rises in the morning.
-The sky becomes bright during the day.
-The moon appears in the night sky.
-Stars can be seen when the sky is clear.
-
 The cat sees the bird.
-The bird sees the cat.
+The cat watches the rabbit.
+The cat walks through the garden.
+The cat sleeps under the tree.
+The dog is running through the field.
 The dog sees the rabbit.
-The rabbit hears the dog.
+The dog watches the forest.
+The dog walks beside the river.
+The dog sleeps near the house.
+The bird is flying above the trees.
+The bird sees the cat.
+The bird watches the field.
+The bird flies across the sky.
+The bird rests on a small branch.
+The fox is walking through the forest.
 The fox watches the forest.
-
-A small animal walks through the forest.
+The fox sees the rabbit.
+The fox walks beside the river.
+The fox sleeps under a tree.
+The rabbit is eating a small green leaf.
+The rabbit sees the fox.
+The rabbit runs through the grass.
+The rabbit hides under the tree.
+The rabbit watches the bird.
+The horse is walking across the field.
+The horse eats green grass.
+The horse drinks water from the river.
+The horse runs across the field.
+The horse rests beside the tree.
+The animal walks through the forest.
 The animal sees a tree.
-The tree has green leaves.
-The wind moves the leaves.
-The animal continues walking.
-
+The animal watches the river.
+The animal moves across the grass.
+The animal rests under the tree.
+A small animal walks through the forest.
+A small animal sees the bird.
+A small animal watches the rabbit.
+A small animal runs across the field.
+A small animal sleeps under a tree.
 Learning takes time.
-A machine can learn patterns from data.
-A language model learns patterns from text.
-The model reads many examples.
-The model tries to predict what comes next.
+A machine can learn patterns.
+A model learns from examples.
+The model reads the text.
+The model predicts the next character.
+The computer processes the data.
+The program reads a sentence.
+The program learns from the dataset.
+The network uses attention to understand context.
+The transformer processes a sequence of tokens.
+The model generates text one character at a time.
+The sun shines above the forest.
+The moon appears above the trees.
+The river flows through the valley.
+The wind moves through the grass.
+The rain falls on the field.
+The tree grows beside the river.
+The forest is full of trees.
+The field is covered with green grass.
+The rabbit runs across the field.
+The fox walks through the forest.
+The dog runs beside the river.
+The cat sleeps under the tree.
+The bird flies above the forest.

@@ -93,18 +93,6 @@ class SelfAttention(nn.Module):
             embedding_dim,
             embedding_dim
         )
-        self.layer_norm = nn.LayerNorm(
-            embedding_dim
-        )
-        self.fc1 = nn.Linear(
-            embedding_dim,
-            4 * embedding_dim
-        )
-        self.gelu = nn.GELU()
-        self.fc2 = nn.Linear(
-            4 * embedding_dim,
-            embedding_dim
-        )
 
         # Create a lower-triangular mask
         self.register_buffer(
@@ -183,7 +171,7 @@ class SelfAttention(nn.Module):
             attention_output
         )
 
-        return (Q, K, V, scores, attention_weights, attention_output)
+        return attention_output
 
 class FeedForward(nn.Module):
 
@@ -245,14 +233,9 @@ class TransformerBlock(nn.Module):
         normalized_x = self.layer_norm_1(x)
 
         # Self-attention
-        (
-        Q,
-        K,
-        V,
-        scores,
-        attention_weights,
-        attention_output
-    ) = self.attention(normalized_x)
+        attention_output = self.attention(
+    normalized_x
+)
 
         # Residual connection
         x = x + attention_output
