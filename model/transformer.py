@@ -152,12 +152,16 @@ class SelfAttention(nn.Module):
             scores,
             dim=-1
         )
+        attention_output = attention_weights @ V
 
-        print("Q:", Q.shape)
-        print("K:", K.shape)
-        print("V:", V.shape)
+        # Move sequence dimension before heads
+        attention_output = attention_output.transpose(1, 2)
 
-        print("Number of heads:", self.num_heads)
-        print("Head dimension:", self.head_dim)
+        # Combine all heads
+        attention_output = attention_output.contiguous().view(
+            attention_output.shape[0],
+            attention_output.shape[1],
+            self.embedding_dim
+        )
 
-        return Q, K, V, scores, attention_weights
+        return (Q, K, V, scores, attention_weights, attention_output)

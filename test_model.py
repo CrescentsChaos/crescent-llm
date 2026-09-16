@@ -28,7 +28,7 @@ tokens = torch.tensor([
 
 x = embedding(tokens)
 
-Q, K, V, scores, attention_weights = attention(x)
+(Q, K, V, scores, attention_weights, attention_output) = attention(x)
 
 
 print("Input:")
@@ -51,3 +51,6 @@ print(scores[0, 0])
 
 print("\nAttention Weights - Batch 0, Head 0:")
 print(attention_weights[0, 0])
+
+print("\nAttention Output:")
+print(attention_output.shape)
