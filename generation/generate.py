@@ -296,12 +296,40 @@ def generate_response(prompt_tokens, max_new_tokens):
 #
 # Keeps a running <USER>/<ASSISTANT>/<END> history and feeds it back
 # in on every turn, so follow-up questions have context. This model's
-# context_length is small, so history is capped at
-# GenerationConfig.max_history_turns most-recent turns (and
-# generate_response falls back to truncating from the front if it's
-# still too long for a single forward pass).
+# context_length is small, so before every turn we drop the oldest
+# whole turns (by actual token count, not just turn count) until the
+# history plus the new prompt leaves enough room for a reply -- so a
+# conversation can go on indefinitely, it just gradually "forgets"
+# the earliest turns instead of ever overflowing the model's context
+# window (which previously could truncate the *current* prompt off
+# the front and feed the model a mangled input).
 #
 # Commands: /reset clears history, /quit or /exit ends the session.
+
+# Reserve room for the model's reply so trimming doesn't hand the
+# model a prompt that already fills the entire context window.
+RESERVE_FOR_RESPONSE = max(16, context_length // 4)
+HISTORY_BUDGET = max(context_length - RESERVE_FOR_RESPONSE, 1)
+
+
+def build_prompt_tokens(history_turns, prompt):
+    """
+    Encodes history_turns + the new prompt, dropping the oldest
+    turn(s) first, until the result fits within HISTORY_BUDGET tokens
+    (or there's no history left to drop).
+    """
+    turns = list(history_turns)
+
+    while True:
+        history_text = "".join(turns)
+        formatted_prompt = history_text + "<USER> " + prompt + " <ASSISTANT>"
+        tokens = tokenizer.encode(formatted_prompt)
+
+        if len(tokens) <= HISTORY_BUDGET or not turns:
+            return tokens
+
+        turns.pop(0)
+
 
 print(
     f"\nChat ready. Type a message and press Enter "
@@ -328,10 +356,7 @@ while True:
         print("(conversation history cleared)\n")
         continue
 
-    history_text = "".join(history_turns)
-    formatted_prompt = history_text + "<USER> " + prompt + " <ASSISTANT>"
-
-    tokens = tokenizer.encode(formatted_prompt)
+    tokens = build_prompt_tokens(history_turns, prompt)
 
     print("Assistant: ", end="", flush=True)
 

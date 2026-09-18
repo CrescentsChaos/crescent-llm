@@ -3,10 +3,18 @@ class ModelConfig:
     fine-tuning — if you change these after pretraining, the
     fine-tuning stage won't be able to load the pretrained weights
     (shapes won't match), so pick these once."""
-    context_length = 128
-    embedding_dim = 128
-    num_heads = 4
-    num_layers = 4
+    # Bumped up from the original 128/128/4/4 now that training data
+    # is going from ~1,400 templated one-liners to tens of thousands
+    # of real multi-turn conversations (see data/raw/README -- the
+    # DailyDialog conversion). The old size was plenty for memorizing
+    # a small fixed set of greetings, but doesn't have the capacity to
+    # pick up general grammar/phrasing from a much larger, more varied
+    # corpus. Still small enough to train quickly on a single GPU;
+    # scale further only if you keep growing the dataset.
+    context_length = 256
+    embedding_dim = 256
+    num_heads = 8
+    num_layers = 6
     dropout = 0.1
 
     # Recompute each block's activations on the backward pass instead
@@ -44,9 +52,22 @@ class PretrainConfig:
     # to a few MB, since the *encoding* step below does run over the
     # full corpus.
     tokenizer_fit_chars = 400_000
-    bpe_merges = 500
+    # A bigger, more varied corpus (real conversations + prose instead
+    # of a handful of repeated greetings) has a much richer set of
+    # common substrings to merge into tokens. More merges = fewer,
+    # more meaningful tokens per word, which both shortens sequences
+    # and gives the model less spelling-from-scratch to do.
+    bpe_merges = 1500
 
-    batch_size = 32
+    # Raised from 32. At this model size (context_length=256,
+    # embedding_dim=256) each step's matmuls are tiny, so a 12GB GPU is
+    # left mostly idle between steps and most of an epoch's wall time
+    # goes to Python/step overhead rather than compute. A bigger batch
+    # does more work per step, so the same epoch needs far fewer steps
+    # for barely any extra memory (still well under a GB at this model
+    # size). Raise further (e.g. 256+) if GPU utilization is still low;
+    # lower it only if you hit an out-of-memory error.
+    batch_size = 128
     learning_rate = 3e-4
     weight_decay = 0.01
     grad_clip_norm = 1.0
@@ -78,9 +99,17 @@ class TrainConfig:
     # checkpoint path) to initialize from a pretrained model instead of
     # training from scratch. Leave as None to skip pretraining
     # entirely — the original from-scratch behavior.
-    pretrained_checkpoint = None
+    #
+    # Wired to PretrainConfig.checkpoint_path by default: run
+    # training/pretrain.py once (on a plain-prose corpus, e.g.
+    # TinyStories) before training/train.py, and fine-tuning will pick
+    # up its weights + tokenizer automatically. If you'd rather skip
+    # pretraining, set this back to None.
+    pretrained_checkpoint = PretrainConfig.checkpoint_path
 
-    batch_size = 32
+    # See the comment on PretrainConfig.batch_size -- same reasoning
+    # applies here.
+    batch_size = 128
     learning_rate = 3e-4
     weight_decay = 0.01
     grad_clip_norm = 1.0
@@ -96,7 +125,7 @@ class TrainConfig:
     early_stopping_patience = 15  # stop if val loss doesn't improve for N epochs
 
     validation_ratio = 0.10
-    bpe_merges = 500  # only used when pretrained_checkpoint is None
+    bpe_merges = 1500  # only used when pretrained_checkpoint is None
 
     seed = 42
 

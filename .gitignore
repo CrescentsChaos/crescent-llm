@@ -1,2 +1,12 @@
-.venv
-__pycache__
+# Virtual Environments
+.venv/
+
+# Python cache & compiled files
+**/__pycache__/
+*.py[cod]
+
+# Data files
+TinyStoriesV2-GPT4-train.txt
+
+model.pt
+pretrained.pt

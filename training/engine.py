@@ -89,7 +89,17 @@ def train_model(
     )
 
     use_amp = device.type == "cuda"
-    scaler = torch.amp.GradScaler(enabled=use_amp)
+
+    # Ampere (RTX 30-series and newer) runs bf16 at the same throughput
+    # as fp16 on tensor cores, but bf16's wider exponent range means it
+    # can't silently underflow the way fp16 can -- so it needs no loss
+    # scaling. GradScaler(enabled=False) makes every scaler.* call below
+    # a plain pass-through (scale/unscale become no-ops, step() just
+    # calls optimizer.step()), so this reuses the exact same code path
+    # for both cases rather than branching the training loop itself.
+    use_bf16 = use_amp and torch.cuda.is_bf16_supported()
+    autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    scaler = torch.amp.GradScaler(enabled=use_amp and not use_bf16)
 
     def compute_loss(x, y, loss_mask):
         x = x.to(device, non_blocking=True)
@@ -98,7 +108,7 @@ def train_model(
 
         with torch.autocast(
             device_type=device.type,
-            dtype=torch.float16,
+            dtype=autocast_dtype,
             enabled=use_amp
         ):
             transformer_output = transformer(x)
@@ -129,13 +139,20 @@ def train_model(
         epoch_start = time.perf_counter()
 
         transformer.train()
-        total_loss = 0.0
+        # Kept as a GPU tensor and only turned into a Python float once,
+        # after the loop (see average_loss below) -- calling .item() on
+        # every micro-batch forces the CPU to stop and wait for the GPU
+        # to catch up right then, which serializes the two and stalls
+        # exactly the kind of overlap that makes a model this small
+        # (sub-millisecond compute per step) run close to GPU-bound
+        # instead of Python/launch-overhead-bound.
+        total_loss = torch.zeros((), device=device)
         optimizer.zero_grad(set_to_none=True)
 
         for batch_idx, (x, y, loss_mask) in enumerate(train_dataloader):
 
             loss = compute_loss(x, y, loss_mask)
-            total_loss += loss.item()
+            total_loss += loss.detach()
 
             # Divide by accumulation_steps so the summed gradient over
             # a full accumulation window matches what a single step on
@@ -159,16 +176,16 @@ def train_model(
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
-        average_loss = total_loss / batches_per_epoch
+        average_loss = (total_loss / batches_per_epoch).item()
 
         transformer.eval()
-        validation_loss = 0.0
+        validation_loss = torch.zeros((), device=device)
 
         with torch.no_grad():
             for x, y, loss_mask in val_dataloader:
-                validation_loss += compute_loss(x, y, loss_mask).item()
+                validation_loss += compute_loss(x, y, loss_mask).detach()
 
-        average_validation_loss = validation_loss / len(val_dataloader)
+        average_validation_loss = (validation_loss / len(val_dataloader)).item()
 
         improved = average_validation_loss < best_validation_loss
 

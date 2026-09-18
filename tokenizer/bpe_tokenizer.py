@@ -58,6 +58,15 @@ class BPETokenizer:
             tuple(pair) for pair in merge_rules
         ]
 
+        # Rank of each merge = its index in the learned order (lower
+        # applies first). Built once here so encode() can look up
+        # "does this pair merge, and how early" in O(1) instead of
+        # walking the whole merge_rules list.
+        tokenizer.merge_ranks = {
+            pair: rank
+            for rank, pair in enumerate(tokenizer.merge_rules)
+        }
+
         tokenizer.vocab_size = len(tokenizer.tokens)
 
         return tokenizer
@@ -154,6 +163,12 @@ class BPETokenizer:
         # --------------------------------------------------
 
         self.merge_rules = self._learn_merges(symbols, num_merges)
+
+        # See from_saved() for what this is for.
+        self.merge_ranks = {
+            pair: rank
+            for rank, pair in enumerate(self.merge_rules)
+        }
 
         self.vocab_size = len(
             self.tokens
@@ -325,47 +340,6 @@ class BPETokenizer:
         return merge_rules
 
     # --------------------------------------------------
-    # Merge a pair (used at encode time, over a short symbol list --
-    # a full O(n) pass here is cheap and the linked-list machinery
-    # above would be overkill).
-    # --------------------------------------------------
-
-    def _merge_pair(
-        self,
-        tokens,
-        pair
-    ):
-
-        result = []
-
-        i = 0
-
-        while i < len(tokens):
-
-            if (
-                i < len(tokens) - 1
-                and tokens[i] == pair[0]
-                and tokens[i + 1] == pair[1]
-            ):
-
-                result.append(
-                    tokens[i]
-                    + tokens[i + 1]
-                )
-
-                i += 2
-
-            else:
-
-                result.append(
-                    tokens[i]
-                )
-
-                i += 1
-
-        return result
-
-    # --------------------------------------------------
     # Encode text.
     # --------------------------------------------------
 
@@ -411,13 +385,15 @@ class BPETokenizer:
 
                 i += 1
 
-        # Apply the learned merges.
-        for pair in self.merge_rules:
-
-            tokens = self._merge_pair(
-                tokens,
-                pair
-            )
+        # Apply the learned merges -- lowest merge-rank pair first,
+        # same effective order as running each merge_rules entry
+        # across the whole token list in turn, just without the O(n)
+        # full-list copy that a naive per-rule pass costs. Mirrors the
+        # linked-list + heap approach _learn_merges uses, except the
+        # heap here is keyed by each pair's fixed learned rank instead
+        # of a live frequency count, since encode() isn't discovering
+        # merges, just replaying a known, fixed order of them.
+        tokens = self._apply_merges(tokens)
 
         # Convert tokens to IDs.
         result = []
@@ -453,6 +429,93 @@ class BPETokenizer:
                         result.append(
                             self.unk_id
                         )
+
+        return result
+
+    def _apply_merges(self, tokens):
+        """
+        Applies self.merge_rules to `tokens` in learned-rank order,
+        using a doubly linked list over live positions and a heap
+        keyed by (rank, position) so only the neighborhood of an
+        actual merge is ever touched -- not a full pass per rule. This
+        is what makes encoding a multi-million-character corpus (e.g.
+        training/pretrain.py's "Encoding full corpus..." step)
+        tractable instead of taking O(num_merges * len(tokens)).
+        """
+
+        n = len(tokens)
+
+        if n < 2 or not self.merge_ranks:
+            return tokens
+
+        special_set = set(self.special_tokens)
+
+        def is_special(sym):
+            return sym in special_set
+
+        nxt = list(range(1, n)) + [-1]
+        prv = [-1] + list(range(0, n - 1))
+        alive = [True] * n
+        tok = list(tokens)
+
+        heap = []
+
+        def push_if_mergeable(i, j):
+            if (
+                j == -1
+                or is_special(tok[i])
+                or is_special(tok[j])
+            ):
+                return
+            rank = self.merge_ranks.get((tok[i], tok[j]))
+            if rank is not None:
+                heapq.heappush(heap, (rank, i))
+
+        i = 0
+        while i != -1:
+            push_if_mergeable(i, nxt[i])
+            i = nxt[i]
+
+        while heap:
+
+            rank, i = heapq.heappop(heap)
+
+            if not alive[i]:
+                continue
+
+            j = nxt[i]
+
+            if j == -1 or not alive[j]:
+                continue
+
+            # Stale entry: the symbols at i/j (or the rank they'd
+            # merge at) have changed since this was pushed -- e.g. an
+            # earlier, lower-rank merge already consumed one of them,
+            # or overlapping matches like "aaa" shifted what's here.
+            pair = (tok[i], tok[j])
+            if self.merge_ranks.get(pair) != rank:
+                continue
+
+            merged_token = pair[0] + pair[1]
+
+            left_neighbor = prv[i]
+            right_neighbor = nxt[j]
+
+            tok[i] = merged_token
+            alive[j] = False
+            nxt[i] = right_neighbor
+            if right_neighbor != -1:
+                prv[right_neighbor] = i
+
+            if left_neighbor != -1:
+                push_if_mergeable(left_neighbor, i)
+            push_if_mergeable(i, right_neighbor)
+
+        result = []
+        i = 0
+        while i != -1:
+            result.append(tok[i])
+            i = nxt[i]
 
         return result
 

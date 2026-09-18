@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint
 
 
@@ -94,10 +95,21 @@ class KVCache:
     def __init__(self, num_layers):
         self.layers = [None] * num_layers
 
-    def seq_len(self):
-        if self.layers[0] is None:
+    def seq_len(self, layer_idx=0):
+        # Must look at *this layer's* cache, not always layer 0's.
+        # Every layer's cache grows in lockstep in practice, but layer
+        # 0 gets updated first within each forward pass, so during
+        # that brief window (after layer 0's update, before layer N's)
+        # querying layers[0] unconditionally reports layer 0's
+        # already-updated length as every other layer's start_pos --
+        # off by the current chunk size for all of them. That
+        # corrupts the rotary position for every layer but the first
+        # on every single forward call (not just once context fills
+        # up), and once start_pos drifts far enough it can index past
+        # the end of the rotary table entirely.
+        if self.layers[layer_idx] is None:
             return 0
-        return self.layers[0][0].shape[2]
+        return self.layers[layer_idx][0].shape[2]
 
     def update(self, layer_idx, k, v):
         cached = self.layers[layer_idx]
@@ -207,8 +219,9 @@ class SelfAttention(nn.Module):
         assert embedding_dim % num_heads == 0
 
         self.head_dim = embedding_dim // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.attention_dropout = nn.Dropout(dropout)
+        # Passed straight to scaled_dot_product_attention below rather
+        # than applied by hand afterward -- see forward().
+        self.dropout_p = dropout
         self.query = nn.Linear(
             embedding_dim,
             embedding_dim
@@ -232,13 +245,13 @@ class SelfAttention(nn.Module):
             context_length
         )
 
-        # Create a lower-triangular mask (bool, so no per-forward
-        # float comparison is needed to use it). Row q, column k is
+        # Create a lower-triangular mask (bool). Row q, column k is
         # True iff position q is allowed to attend to position k
-        # (k <= q). This same buffer is reused verbatim for cached
-        # generation: with a cache, queries live at rows
-        # [start_pos, start_pos + T_new) and keys span columns
-        # [0, start_pos + T_new), so slicing
+        # (k <= q). The plain training/eval path (no kv_cache) now
+        # gets its causal mask for free from SDPA's is_causal flag, so
+        # this buffer is only needed for cached generation: with a
+        # cache, queries live at rows [start_pos, start_pos + T_new)
+        # and keys span columns [0, start_pos + T_new), so slicing
         # mask[start_pos:start_pos+T_new, :start_pos+T_new] gives
         # exactly the right causal pattern without rebuilding anything.
         self.register_buffer(
@@ -288,7 +301,7 @@ class SelfAttention(nn.Module):
         # before this call. Zero for a normal training/prefill forward
         # pass; equal to however many tokens are already cached during
         # incremental generation.
-        start_pos = kv_cache.seq_len() if kv_cache is not None else 0
+        start_pos = kv_cache.seq_len(layer_idx) if kv_cache is not None else 0
 
         Q, K = self.rotary_embedding(
             Q,
@@ -302,33 +315,51 @@ class SelfAttention(nn.Module):
             # (past + new) set.
             K, V = kv_cache.update(layer_idx, K, V)
 
-        scores = (
-            Q @ K.transpose(-2, -1)
-        ) * self.scale
-
         # Number of new query positions in this call, and the total
         # number of keys they may attend to (past + new).
         query_length = Q.shape[2]
         key_length = K.shape[2]
 
-        scores = scores.masked_fill(
-            ~self.mask[
+        dropout_p = self.dropout_p if self.training else 0.0
+
+        # scaled_dot_product_attention fuses the score matmul, causal
+        # masking, softmax, dropout and the value matmul into one (or
+        # a couple of) GPU kernel(s) -- typically a flash-attention or
+        # memory-efficient-attention backend -- instead of the four to
+        # five separate kernels (matmul, masked_fill, softmax, dropout,
+        # matmul) the hand-written version launched every single call.
+        # For a model this small the matmuls themselves are trivial;
+        # the number of kernel launches per forward pass is what
+        # actually dominates wall-clock time, so this is the single
+        # biggest lever available inside the model itself.
+        if kv_cache is None and query_length == key_length:
+            # Plain training/eval forward: a square causal mask, which
+            # is exactly what SDPA's built-in is_causal flag computes
+            # -- no need to materialize a mask tensor at all.
+            attention_output = F.scaled_dot_product_attention(
+                Q, K, V,
+                is_causal=True,
+                dropout_p=dropout_p
+            )
+        else:
+            # KV-cache decoding: queries sit at absolute positions
+            # [start_pos, start_pos + query_length) and may attend to
+            # every cached + new key [0, key_length). SDPA's is_causal
+            # assumes the query and key sequences start at the same
+            # position (upper-left-aligned triangle), which is wrong
+            # here whenever start_pos > 0 -- so this passes the same
+            # offset-aware mask the original manual implementation
+            # used, explicitly, instead.
+            attn_mask = self.mask[
                 start_pos:start_pos + query_length,
                 :key_length
-            ],
-            float("-inf")
-        )
-        # Convert scores into attention probabilities
-        attention_weights = torch.softmax(
-            scores,
-            dim=-1
-        )
+            ]
 
-        attention_weights = self.attention_dropout(
-            attention_weights
-        )
-
-        attention_output = attention_weights @ V
+            attention_output = F.scaled_dot_product_attention(
+                Q, K, V,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p
+            )
 
         # Move sequence dimension before heads
         attention_output = attention_output.transpose(1, 2)

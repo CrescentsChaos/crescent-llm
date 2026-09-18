@@ -1,12 +1,12 @@
 import os
 
 import torch
-from torch.utils.data import DataLoader
 
 from training.dataset import (
     TextDataset,
     split_conversations
 )
+from training.fast_loader import FastTensorLoader
 from tokenizer.bpe_tokenizer import BPETokenizer
 from training.engine import train_model
 from config import ModelConfig, TrainConfig
@@ -34,6 +34,12 @@ print("Device:", device)
 if device.type == "cuda":
     print("GPU:", torch.cuda.get_device_name(0))
     torch.backends.cudnn.benchmark = True
+    # Let matmuls use TF32 on Ampere+ GPUs (RTX 3060 included) instead
+    # of full fp32 -- free throughput for the handful of ops that run
+    # outside the autocast region, at essentially no precision cost for
+    # a model this size.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 
 # =========================
@@ -153,17 +159,19 @@ print("Validation samples:", len(val_dataset))
 # DataLoaders
 # =========================
 
-train_dataloader = DataLoader(
+train_dataloader = FastTensorLoader(
     train_dataset,
     batch_size=TrainConfig.batch_size,
     shuffle=True,
+    device=device,
     pin_memory=(device.type == "cuda")
 )
 
-val_dataloader = DataLoader(
+val_dataloader = FastTensorLoader(
     val_dataset,
     batch_size=TrainConfig.batch_size,
     shuffle=False,
+    device=device,
     pin_memory=(device.type == "cuda")
 )
 
