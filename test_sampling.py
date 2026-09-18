@@ -156,8 +156,7 @@ def sample_next_token(
 # --------------------------------------------------
 
 prompt = (
-    "<USER> What is Python? "
-    "<ASSISTANT> Python is a programming language"
+    "<USER> What is a computer? <ASSISTANT>"
 )
 
 tokens = tokenizer.encode(

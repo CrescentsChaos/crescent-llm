@@ -3,13 +3,28 @@ from torch.utils.data import Dataset
 
 
 class TextDataset(Dataset):
+    """
+    Builds one training window per conversational turn, always anchored
+    at that turn's <USER> token so the model actually sees the question
+    it's supposed to be answering.
+
+    Earlier versions of this dataset slid a fixed-size window across
+    the whole tokenized conversation at a fixed stride, regardless of
+    where <USER>/<ASSISTANT> boundaries fell. For conversations longer
+    than context_length (the common case, since most conversations
+    tokenize to well over context_length tokens), that meant the vast
+    majority of windows started mid-conversation, after the question
+    had already scrolled out of view — the model was mostly trained on
+    "continue this text" rather than "answer this question". Anchoring
+    every window at a real <USER> position fixes that, and as a bonus
+    mines every turn of a multi-turn conversation as its own example.
+    """
 
     def __init__(
         self,
         conversations,
         tokenizer,
-        context_length,
-        stride=8
+        context_length
     ):
         self.samples = []
 
@@ -24,16 +39,29 @@ class TextDataset(Dataset):
             if len(tokens) < 2:
                 continue
 
-            start = 0
+            turn_starts = [
+                i for i, token in enumerate(tokens)
+                if token == user_id
+            ]
 
-            while start < len(tokens) - 1:
+            # Lines with no <USER> tag at all can't be turned into a
+            # question -> answer example; skip them.
+            if not turn_starts:
+                continue
 
+            for start in turn_starts:
+
+                # A turn runs from its <USER> tag up to the next one
+                # (or the end of the conversation). Chunks longer than
+                # context_length are truncated from the front, i.e.
+                # the question is always kept intact and only a very
+                # long answer's tail is ever cut off.
                 chunk = tokens[
                     start:start + context_length + 1
                 ]
 
                 if len(chunk) < 2:
-                    break
+                    continue
 
                 x = chunk[:-1]
                 y = chunk[1:]
@@ -91,8 +119,6 @@ class TextDataset(Dataset):
                             loss_mask
                         )
                     )
-
-                start += stride
 
     def __len__(self):
         return len(self.samples)

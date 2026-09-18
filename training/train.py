@@ -1,29 +1,39 @@
+import os
+
 import torch
-import torch.nn.functional as F
-import torch.optim as optim
+from torch.utils.data import DataLoader
+
 from training.dataset import (
     TextDataset,
     split_conversations
 )
-import time
-from torch.utils.data import DataLoader
 from tokenizer.bpe_tokenizer import BPETokenizer
-from config import ModelConfig
+from training.engine import train_model
+from config import ModelConfig, TrainConfig
 from model.transformer import Transformer, LanguageModelHead
 
 
 # =========================
-# Device
+# Reproducibility / Device
 # =========================
 
-device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+torch.manual_seed(TrainConfig.seed)
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    # Apple Silicon GPU. AMP/GradScaler stays disabled here (engine.py
+    # only enables it for CUDA), so this trains in plain fp32 -- still
+    # much faster than CPU for this model size.
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 print("Device:", device)
 
 if device.type == "cuda":
     print("GPU:", torch.cuda.get_device_name(0))
+    torch.backends.cudnn.benchmark = True
 
 
 # =========================
@@ -38,15 +48,10 @@ with open(
 
     text = file.read()
 
-
-# =========================
-# Split conversations first
-# =========================
-
 train_conversations, validation_conversations = split_conversations(
     text,
-    validation_ratio=0.10,
-    seed=42
+    validation_ratio=TrainConfig.validation_ratio,
+    seed=TrainConfig.seed
 )
 
 print("\nTraining conversations:")
@@ -55,32 +60,89 @@ print(len(train_conversations))
 print("Validation conversations:")
 print(len(validation_conversations))
 
-train_text = "\n".join(
-    train_conversations
-)
 
-tokenizer = BPETokenizer(
-    train_text,
-    num_merges=100
-)
+# =========================
+# Tokenizer + architecture
+# =========================
+#
+# If a pretrained checkpoint is configured, reuse its exact tokenizer
+# and architecture (so the embedding table the pretrained weights were
+# learned for still lines up) instead of fitting a fresh tokenizer on
+# just the Q&A data. Otherwise, fall back to the original behavior:
+# train a tokenizer from scratch on the Q&A training text.
 
-vocab_size = tokenizer.vocab_size
+pretrained_checkpoint = None
+model_config = {
+    "context_length": ModelConfig.context_length,
+    "embedding_dim": ModelConfig.embedding_dim,
+    "num_heads": ModelConfig.num_heads,
+    "num_layers": ModelConfig.num_layers,
+    "dropout": ModelConfig.dropout,
+    "gradient_checkpointing": ModelConfig.gradient_checkpointing,
+}
 
-print("\nBPE tokenizer created.")
-print("Vocabulary size:", vocab_size)
+if TrainConfig.pretrained_checkpoint:
+
+    if not os.path.exists(TrainConfig.pretrained_checkpoint):
+        raise FileNotFoundError(
+            f"TrainConfig.pretrained_checkpoint is set to "
+            f"'{TrainConfig.pretrained_checkpoint}' but that file "
+            "doesn't exist. Run training/pretrain.py first, or set "
+            "TrainConfig.pretrained_checkpoint = None to train from "
+            "scratch."
+        )
+
+    print(f"\nLoading pretrained checkpoint: {TrainConfig.pretrained_checkpoint}")
+
+    pretrained_checkpoint = torch.load(
+        TrainConfig.pretrained_checkpoint,
+        map_location=device
+    )
+
+    tokenizer = BPETokenizer.from_saved(
+        pretrained_checkpoint["tokenizer_tokens"],
+        pretrained_checkpoint["tokenizer_merge_rules"]
+    )
+
+    # The pretrained checkpoint's own architecture wins, since the
+    # weights we're about to load were trained at that shape.
+    model_config = pretrained_checkpoint.get("model_config", model_config)
+
+    vocab_size = pretrained_checkpoint["vocab_size"]
+
+    print("Vocabulary size (from pretrained checkpoint):", vocab_size)
+
+else:
+
+    train_text = "\n".join(
+        train_conversations
+    )
+
+    tokenizer = BPETokenizer(
+        train_text,
+        num_merges=TrainConfig.bpe_merges
+    )
+
+    vocab_size = tokenizer.vocab_size
+
+    print("\nBPE tokenizer created.")
+    print("Vocabulary size:", vocab_size)
+
+
+# =========================
+# Datasets
+# =========================
 
 train_dataset = TextDataset(
     train_conversations,
     tokenizer,
-    ModelConfig.context_length,
-    stride=8
+    model_config["context_length"]
 )
 
 val_dataset = TextDataset(
     validation_conversations,
     tokenizer,
-    ModelConfig.context_length,
-    stride=8
+    model_config["context_length"]
 )
 
 print("Training samples:", len(train_dataset))
@@ -93,14 +155,16 @@ print("Validation samples:", len(val_dataset))
 
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=ModelConfig.batch_size,
-    shuffle=True
+    batch_size=TrainConfig.batch_size,
+    shuffle=True,
+    pin_memory=(device.type == "cuda")
 )
 
 val_dataloader = DataLoader(
     val_dataset,
-    batch_size=ModelConfig.batch_size,
-    shuffle=False
+    batch_size=TrainConfig.batch_size,
+    shuffle=False,
+    pin_memory=(device.type == "cuda")
 )
 
 
@@ -110,12 +174,17 @@ val_dataloader = DataLoader(
 
 transformer = Transformer(
     vocab_size=vocab_size,
-    context_length=ModelConfig.context_length,
-    embedding_dim=ModelConfig.embedding_dim,
-    num_heads=ModelConfig.num_heads,
-    num_layers=ModelConfig.num_layers
+    context_length=model_config["context_length"],
+    embedding_dim=model_config["embedding_dim"],
+    num_heads=model_config["num_heads"],
+    num_layers=model_config["num_layers"],
+    dropout=model_config["dropout"],
+    gradient_checkpointing=model_config.get("gradient_checkpointing", False)
 ).to(device)
 
+if pretrained_checkpoint is not None:
+    transformer.load_state_dict(pretrained_checkpoint["transformer"])
+    print("Initialized transformer weights from pretrained checkpoint.")
 
 lm_head = LanguageModelHead(
     transformer.embedding.token_embedding.embedding.weight
@@ -124,148 +193,38 @@ lm_head = LanguageModelHead(
 
 print("\nModel device:")
 print("Transformer:", next(transformer.parameters()).device)
-print("LM Head:", next(lm_head.parameters()).device)
+
+num_params = sum(p.numel() for p in transformer.parameters())
+print(f"Trainable parameters: {num_params:,}")
 
 
 # =========================
-# Optimizer
+# Fine-tune
 # =========================
 
-optimizer = optim.AdamW(
-    transformer.parameters(),
-    lr=ModelConfig.learning_rate,
-    weight_decay=0.0
+train_model(
+    transformer,
+    lm_head,
+    train_dataloader,
+    val_dataloader,
+    vocab_size,
+    device,
+    learning_rate=TrainConfig.learning_rate,
+    weight_decay=TrainConfig.weight_decay,
+    grad_clip_norm=TrainConfig.grad_clip_norm,
+    num_epochs=TrainConfig.num_epochs,
+    warmup_steps=TrainConfig.warmup_steps,
+    early_stopping_patience=TrainConfig.early_stopping_patience,
+    checkpoint_path="model.pt",
+    checkpoint_extra={
+        "vocab_size": vocab_size,
+        "tokenizer_tokens": tokenizer.tokens,
+        "tokenizer_merge_rules": tokenizer.merge_rules,
+        "model_config": model_config,
+    },
+    label="model",
+    gradient_accumulation_steps=TrainConfig.gradient_accumulation_steps,
+    label_smoothing=TrainConfig.label_smoothing
 )
-
-
-# =========================
-# Training
-# =========================
-
-epochs = 30
-
-
-print("\nStarting training...")
-training_start = time.perf_counter()
-best_validation_loss = float("inf")
-for epoch in range(epochs):
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    epoch_start = time.perf_counter()
-    total_loss = 0.0
-
-    for x, y, loss_mask in train_dataloader:
-
-        x = x.to(device)
-        y = y.to(device)
-        loss_mask = loss_mask.to(device)
-
-        optimizer.zero_grad()
-
-        transformer_output = transformer(x)
-
-        logits = lm_head(transformer_output)
-
-        losses = F.cross_entropy(
-            logits.view(-1, vocab_size),
-            y.view(-1),
-            reduction="none"
-        )
-
-        losses = losses.view(y.shape)
-
-        loss = (
-            losses * loss_mask
-        ).sum() / loss_mask.sum()
-
-        loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(
-            transformer.parameters(),
-            max_norm=1.0
-        )
-
-        optimizer.step()
-
-        total_loss += loss.item()
-
-
-    average_loss = total_loss / len(train_dataloader)
-    # Validation
-    transformer.eval()
-    lm_head.eval()
-
-    validation_loss = 0.0
-
-    with torch.no_grad():
-
-        for x, y, loss_mask in val_dataloader:
-
-            x = x.to(device)
-            y = y.to(device)
-            loss_mask = loss_mask.to(device)
-            transformer_output = transformer(x)
-            logits = lm_head(transformer_output)
-
-            losses = F.cross_entropy(
-                logits.view(-1, vocab_size),
-                y.view(-1),
-                reduction="none"
-            )
-
-            losses = losses.view(
-                y.shape
-            )
-
-            loss = (
-                losses * loss_mask
-            ).sum() / loss_mask.sum()
-
-            validation_loss += loss.item()
-
-
-    average_validation_loss = (
-        validation_loss / len(val_dataloader)
-    )
-
-
-    # Save best model
-    if average_validation_loss < best_validation_loss:
-
-        best_validation_loss = average_validation_loss
-
-        torch.save(
-            {
-                "transformer": transformer.state_dict(),
-                "lm_head": lm_head.state_dict(),
-                "vocab_size": vocab_size,
-                "tokenizer_tokens": tokenizer.tokens,
-                "tokenizer_merge_rules": tokenizer.merge_rules
-            },
-            "model.pt"
-        )
-
-        print("Best model saved!")
-
-
-    # Update learning rate
-
-    transformer.train()
-    lm_head.train()
-    
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    epoch_time = time.perf_counter() - epoch_start
-
-    print(
-        f"Epoch {epoch + 1:3d}/{epochs} "
-        f"Train Loss: {average_loss:.4f} "
-    f"Val Loss: {average_validation_loss:.4f} "
-        f"Time: {epoch_time:.3f}s"
-    )
-if device.type == "cuda":
-    torch.cuda.synchronize()    
-total_time = time.perf_counter() - training_start
-print(f"\nTotal training time: {total_time:.2f}s")
 
 print("\nModel saved to model.pt")

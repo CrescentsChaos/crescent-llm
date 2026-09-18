@@ -198,7 +198,7 @@ lm_head.eval()
 
 prompt = (
     "<USER> What is Python? "
-    "<ASSISTANT> Python is a programming language"
+    "<ASSISTANT> P"
 )
 
 tokens = encode(prompt)
